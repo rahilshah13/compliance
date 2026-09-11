@@ -13,7 +13,26 @@
         const App = () => {
             const [url, setUrl] = createSignal('');
             const [naics, setNaics] = createSignal('');
-            const [fws, setFws] = createSignal({ 'SOC 2': true, 'ISO 27001': false, 'PCI-DSS': false, 'HIPAA': false, 'CMMC': false });
+            const [fws, setFws] = createSignal({ 
+                'SOC 2': true, 
+                'ISO 27001': false, 
+                'PCI-DSS': false, 
+                'HIPAA': false, 
+                'CMMC': false,
+                'FIPS 140-3': false, 
+                'FIPS 140-2': false, 
+                'FIPS 180-4': false, 
+                'FIPS 186-5': false, 
+                'FIPS 197': false,
+                'FIPS 198-1': false,
+                'FIPS 199': false,
+                'FIPS 200': false,
+                'FIPS 201-3': false,
+                'FIPS 202': false,
+                'FIPS 203': false,
+                'FIPS 204': false,
+                'FIPS 205': false
+            });
             const [loading, setLoading] = createSignal(false);
             const [progress, setProgress] = createSignal(0);
             const [msg, setMsg] = createSignal('');
@@ -75,14 +94,14 @@
             };
 
             return html`
-                <div style="font-family:sans-serif;max-width:600px;margin:40px auto">
-                    <h2>Compliance Auditor</h2>
+                <div style="font-family:sans-serif;max-width:700px;margin:40px auto">
+                    <h2>Enterprise Compliance & FIPS Auditor</h2>
                     <form onSubmit=${submit} style="display:flex;flex-direction:column;gap:15px">
                         <input type="text" placeholder="GitHub Repo URL" value=${url()} onInput=${e => setUrl(e.target.value)} required style="padding:8px"/>
                         <input type="text" placeholder="NAICS Code (Optional, e.g. 541512)" value=${naics()} onInput=${e => setNaics(e.target.value)} style="padding:8px"/>
-                        <div style="display:flex;gap:10px;flex-wrap:wrap">
+                        <div style="display:flex;gap:12px;flex-wrap:wrap;max-height:160px;overflow-y:auto;padding:8px;border:1px solid #cbd5e0;border-radius:4px">
                             ${Object.keys(fws()).map(fw => html`
-                                <label style="cursor:pointer">
+                                <label style="cursor:pointer;font-size:13px;display:flex;align-items:center;gap:4px">
                                     <input type="checkbox" checked=${fws()[fw]} onChange=${() => toggleFw(fw)}/> ${fw}
                                 </label>
                             `)}

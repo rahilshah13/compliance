@@ -18,19 +18,33 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://ollama:11434")
 MODEL_NAME = os.getenv("MODEL_NAME", "gemma2:2b")
 
+# Comprehensive catalog combining industry frameworks and all active FIPS standards
 FRAMEWORKS = {
     "SOC 2": ["Access Control", "Change Management", "Encryption", "Incident Response"],
     "ISO 27001": ["SoA Mapping", "Risk Assessment", "Asset Management", "Internal Audit"],
     "PCI-DSS": ["Cardholder Data Encryption", "Access Restrictions", "Vulnerability Management", "Network Monitoring"],
     "HIPAA": ["Protected Health Information (PHI) Safeguards", "Access Auditing", "Transmission Security", "Business Associate Controls"],
-    "CMMC": ["Configuration Management", "Identification & Authentication", "System Maintenance", "Physical Protection"]
+    "CMMC": ["Configuration Management", "Identification & Authentication", "System Maintenance", "Physical Protection"],
+    "FIPS 140-3": ["Cryptographic Module Specification", "Ports and Interfaces", "Roles, Services, and Authentication", "Key Management"],
+    "FIPS 140-2": ["Module Specification", "Cryptographic Officer Roles", "Physical Security", "Self-Tests"],
+    "FIPS 180-4": ["Secure Hash Standard", "SHA-256/SHA-512 Implementation", "Message Digest Integrity", "Hash Verification"],
+    "FIPS 186-5": ["Digital Signature Standard", "RSA and ECDSA Generation", "Signature Verification", "Key Pair Generation"],
+    "FIPS 197": ["Advanced Encryption Standard", "AES-128/256 Cipher Implementation", "Key Expansion", "Block Cipher Modes"],
+    "FIPS 198-1": ["Keyed-Hash Message Authentication", "HMAC Construction", "Key Integrity Verification", "Authentication Tag Validation"],
+    "FIPS 199": ["Security Categorization", "Confidentiality Impact", "Integrity Impact", "Availability Impact"],
+    "FIPS 200": ["Minimum Security Requirements", "System and Information Integrity", "Access Control Baselines", "Auditing and Accountability"],
+    "FIPS 201-3": ["Personal Identity Verification", "Credential Lifecycles", "Smart Card Interoperability", "Authentication Protocols"],
+    "FIPS 202": ["SHA-3 Standard", "Permutation-Based Functions", "Extendable-Output Functions (XOF)", "Keccak Hash Integrity"],
+    "FIPS 203": ["Module-Lattice-Based KEM", "Post-Quantum Cryptography", "Encapsulation Key Management", "Ciphertext Verification"],
+    "FIPS 204": ["Module-Lattice-Based Digital Signatures", "ML-DSA Implementation", "Signature Generation", "Public Key Validation"],
+    "FIPS 205": ["Stateless Hash-Based Signatures", "SLH-DSA Implementation", "Tree-Based Hash Authentication", "Secure Key Generation"]
 }
 
 NAICS_MAPPING = {
-    "541511": ["SOC 2", "ISO 27001"],
-    "541512": ["SOC 2", "ISO 27001", "CMMC"],
-    "522110": ["PCI-DSS", "SOC 2"],
-    "621111": ["HIPAA", "SOC 2"]
+    "541511": ["SOC 2", "ISO 27001", "FIPS 140-3", "FIPS 200"],
+    "541512": ["SOC 2", "ISO 27001", "CMMC", "FIPS 140-3", "FIPS 197", "FIPS 200"],
+    "522110": ["PCI-DSS", "SOC 2", "FIPS 140-3", "FIPS 197", "FIPS 199"],
+    "621111": ["HIPAA", "SOC 2", "FIPS 199", "FIPS 200"]
 }
 
 class Req(BaseModel):
@@ -80,7 +94,7 @@ def audit_stream(req: Req):
                         rel_path = os.path.relpath(os.path.join(r, f), td)
                         files.append(rel_path)
 
-            yield f"data: {json.dumps({'status': f'Found {len(files)} source files. Beginning comprehensive evaluation...', 'progress': 20})}\n\n"
+            yield f"data: {json.dumps({'status': f'Found {len(files)} source files. Beginning comprehensive audit evaluation...', 'progress': 20})}\n\n"
             
             results = {}
             total_fields = sum(len(FRAMEWORKS[fw]) for fw in target_frameworks if fw in FRAMEWORKS)
@@ -96,7 +110,6 @@ def audit_stream(req: Req):
                     yield f"data: {json.dumps({'status': f'Evaluating [{fw}]: {field} ({current_field}/{total_fields})...', 'progress': pct})}\n\n"
                     
                     field_evals = []
-                    # Iterate through EVERY file in the repository without truncation
                     for fp in files:
                         content = ""
                         try:
@@ -105,9 +118,8 @@ def audit_stream(req: Req):
                         except Exception:
                             content = "[Unreadable]"
                         
-                        # Injected the actual source code content directly into the prompt payload
                         prompt = (
-                            f"System audit of file '{fp}' for compliance standard '{field}'.\n\n"
+                            f"System audit of file '{fp}' for compliance standard '{fw} - {field}'.\n\n"
                             f"File Contents:\n{content}\n\n"
                             f"Output format requirement: Start strictly with [COMPLIANT], [PARTIAL], or [NON-COMPLIANT], "
                             f"followed by exactly one concise, professional sentence summarizing compliance based on the code above."
@@ -143,7 +155,7 @@ def audit_stream(req: Req):
             story = [Paragraph("Enterprise Compliance & Industry Audit Report", styles['Heading1']), Paragraph(f"Repo: {req.repo_url} | NAICS: {req.naics_code or 'N/A'}", styles['Normal']), Spacer(1, 10)]
             
             list(map(lambda item: [
-                story.append(Paragraph(f"<b>Framework: {item[0]}</b>", styles['Heading2'])),
+                story.append(Paragraph(f"<b>Standard / Framework: {item[0]}</b>", styles['Heading2'])),
                 *map(lambda f_evs: [
                     story.append(Paragraph(f"Requirement: {f_evs[0]}", styles['Normal'])),
                     story.append(Table([
