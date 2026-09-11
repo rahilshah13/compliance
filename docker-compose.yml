@@ -1,0 +1,43 @@
+version: '3.8'
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        ollama serve &
+        sleep 2
+        echo "Pulling Gemma 2 model..."
+        ollama pull gemma2:2b
+        echo "Model download complete!"
+        wait
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list | grep -q gemma2:2b"]
+      interval: 5s
+      timeout: 5s
+      retries: 300
+      start_period: 5s
+  app:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM python:3.11-slim
+        WORKDIR /app
+        RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+        RUN pip install --no-cache-dir fastapi==0.110.0 uvicorn==0.28.0 requests==2.31.0 pydantic==2.6.4 reportlab==4.1.0
+        COPY . .
+        CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "5000"]
+    ports:
+      - "5001:5000"
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - MODEL_NAME=gemma2:2b
+    depends_on:
+      ollama:
+        condition: service_healthy
+volumes:
+  ollama_data:

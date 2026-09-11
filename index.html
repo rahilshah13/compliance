@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Compliance Auditor</title>
+</head>
+<body>
+    <div id="app"></div>
+    <script type="module">
+        import { createSignal } from 'https://esm.sh/solid-js@1.8.15';
+        import { render } from 'https://esm.sh/solid-js@1.8.15/web';
+        import html from 'https://esm.sh/solid-js@1.8.15/html';
+
+        const App = () => {
+            const [url, setUrl] = createSignal('');
+            const [naics, setNaics] = createSignal('');
+            const [fws, setFws] = createSignal({ 'SOC 2': true, 'ISO 27001': false, 'PCI-DSS': false, 'HIPAA': false, 'CMMC': false });
+            const [loading, setLoading] = createSignal(false);
+            const [progress, setProgress] = createSignal(0);
+            const [msg, setMsg] = createSignal('');
+
+            const toggleFw = (fw) => setFws({...fws(), [fw]: !fws()[fw]});
+
+            const submit = async (e) => {
+                e.preventDefault();
+                setLoading(true);
+                setProgress(5);
+                setMsg('Initializing audit pipeline...');
+
+                try {
+                    const selectedFws = Object.keys(fws()).filter(k => fws()[k]);
+                    const res = await fetch('/api/audit-stream', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ repo_url: url(), frameworks: selectedFws, naics_code: naics() || null })
+                    });
+
+                    if (!res.ok) throw new Error('Stream connection failed');
+
+                    const reader = res.body.getReader();
+                    const decoder = new TextDecoder();
+                    let buffer = '';
+
+                    while (true) {
+                        const { value, done } = await reader.read();
+                        if (done) break;
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split('\n\n');
+                        buffer = lines.pop();
+
+                        for (const line of lines) {
+                            if (line.startsWith('data: ')) {
+                                const data = JSON.parse(line.substring(6));
+                                if (data.error) throw new Error(data.error);
+                                if (data.status) setMsg(data.status);
+                                if (data.progress) setProgress(data.progress);
+                                
+                                if (data.pdf) {
+                                    setProgress(100);
+                                    const bytes = new Uint8Array(data.pdf.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+                                    const blob = new Blob([bytes], { type: 'application/pdf' });
+                                    const a = document.createElement('a');
+                                    a.href = URL.createObjectURL(blob);
+                                    a.download = 'compliance_audit.pdf';
+                                    a.click();
+                                    setMsg('Report downloaded successfully!');
+                                }
+                            }
+                        }
+                    }
+                } catch (err) {
+                    setMsg('Error: ' + err.message);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            return html`
+                <div style="font-family:sans-serif;max-width:600px;margin:40px auto">
+                    <h2>Compliance Auditor</h2>
+                    <form onSubmit=${submit} style="display:flex;flex-direction:column;gap:15px">
+                        <input type="text" placeholder="GitHub Repo URL" value=${url()} onInput=${e => setUrl(e.target.value)} required style="padding:8px"/>
+                        <input type="text" placeholder="NAICS Code (Optional, e.g. 541512)" value=${naics()} onInput=${e => setNaics(e.target.value)} style="padding:8px"/>
+                        <div style="display:flex;gap:10px;flex-wrap:wrap">
+                            ${Object.keys(fws()).map(fw => html`
+                                <label style="cursor:pointer">
+                                    <input type="checkbox" checked=${fws()[fw]} onChange=${() => toggleFw(fw)}/> ${fw}
+                                </label>
+                            `)}
+                        </div>
+                        <button type="submit" disabled=${loading} style=${() => `padding:10px;background:${loading() ? '#a0aec0' : '#2b6cb0'};color:#fff;border:none;cursor:${loading() ? 'not-allowed' : 'pointer'}`}>
+                            ${() => loading() ? 'Generating Report...' : 'Generate PDF Report'}
+                        </button>
+                    </form>
+                    ${() => loading() && html`
+                        <div style="margin-top:15px;background:#edf2f7;border-radius:4px;overflow:hidden;height:12px">
+                            <div style=${() => `width: ${progress()}%; background:#2b6cb0; height:100%; transition: width 0.3s ease`}></div>
+                        </div>
+                    `}
+                    <p style="font-weight:bold;margin-top:10px">${msg}</p>
+                </div>
+            `;
+        };
+
+        render(App, document.getElementById('app'));
+    </script>
+</body>
+</html>
