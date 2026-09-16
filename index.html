@@ -147,6 +147,59 @@
                 }
             };
 
+            const submitDiffSummary = async (e) => {
+                e.preventDefault();
+                setLoading(true);
+                setProgress(5);
+                setMsg('Initializing source code diff & development summary pipeline...');
+
+                try {
+                    const res = await fetch('/api/diff-summary-stream', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ repo_url: url() })
+                    });
+
+                    if (!res.ok) throw new Error('Diff summary stream connection failed');
+
+                    const reader = res.body.getReader();
+                    const decoder = new TextDecoder();
+                    let buffer = '';
+
+                    while (true) {
+                        const { value, done } = await reader.read();
+                        if (done) break;
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split('\n\n');
+                        buffer = lines.pop();
+
+                        for (const line of lines) {
+                            if (line.startsWith('data: ')) {
+                                const data = JSON.parse(line.substring(6));
+                                if (data.error) throw new Error(data.error);
+                                if (data.status) setMsg(data.status);
+                                if (data.progress) setProgress(data.progress);
+                                
+                                if (data.pdf) {
+                                    setProgress(100);
+                                    const bytes = new Uint8Array(data.pdf.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+                                    const blob = new Blob([bytes], { type: 'application/pdf' });
+                                    const a = document.createElement('a');
+                                    a.href = URL.createObjectURL(blob);
+                                    a.download = 'repo_diff_summary.pdf';
+                                    a.click();
+                                    setMsg('Diff summary 1-page report downloaded successfully!');
+                                }
+                            }
+                        }
+                    }
+                } catch (err) {
+                    setMsg('Error: ' + err.message);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
             return html`
                 <div style="font-family:sans-serif;max-width:700px;margin:40px auto">
                     <h2>Enterprise Compliance & FIPS Auditor</h2>
@@ -166,6 +219,11 @@
                             </button>
                             <button type="button" onClick=${submitStig} disabled=${loading()} style=${() => `flex:1;padding:10px;background:${loading() ? '#a0aec0' : '#2d3748'};color:#fff;border:none;cursor:${loading() ? 'not-allowed' : 'pointer'}`}>
                                 ${() => loading() ? 'Processing...' : 'Generate Bulleted STIG Report'}
+                            </button>
+                        </div>
+                        <div>
+                            <button type="button" onClick=${submitDiffSummary} disabled=${loading()} style=${() => `width:100%;padding:12px;background:${loading() ? '#a0aec0' : '#276749'};color:#fff;border:none;font-weight:bold;cursor:${loading() ? 'not-allowed' : 'pointer'}`}>
+                                ${() => loading() ? 'Processing...' : 'Generate Diff Summary 1-Page Report'}
                             </button>
                         </div>
                     </form>
