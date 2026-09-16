@@ -31,7 +31,8 @@
                 'FIPS 202': false,
                 'FIPS 203': false,
                 'FIPS 204': false,
-                'FIPS 205': false
+                'FIPS 205': false,
+                'STIG': false
             });
             const [loading, setLoading] = createSignal(false);
             const [progress, setProgress] = createSignal(0);
@@ -93,6 +94,59 @@
                 }
             };
 
+            const submitStig = async (e) => {
+                e.preventDefault();
+                setLoading(true);
+                setProgress(5);
+                setMsg('Initializing STIG security evaluation pipeline...');
+
+                try {
+                    const res = await fetch('/api/stig-stream', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ repo_url: url(), frameworks: ['STIG'] })
+                    });
+
+                    if (!res.ok) throw new Error('STIG stream connection failed');
+
+                    const reader = res.body.getReader();
+                    const decoder = new TextDecoder();
+                    let buffer = '';
+
+                    while (true) {
+                        const { value, done } = await reader.read();
+                        if (done) break;
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split('\n\n');
+                        buffer = lines.pop();
+
+                        for (const line of lines) {
+                            if (line.startsWith('data: ')) {
+                                const data = JSON.parse(line.substring(6));
+                                if (data.error) throw new Error(data.error);
+                                if (data.status) setMsg(data.status);
+                                if (data.progress) setProgress(data.progress);
+                                
+                                if (data.pdf) {
+                                    setProgress(100);
+                                    const bytes = new Uint8Array(data.pdf.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+                                    const blob = new Blob([bytes], { type: 'application/pdf' });
+                                    const a = document.createElement('a');
+                                    a.href = URL.createObjectURL(blob);
+                                    a.download = 'stig_compliance_report.pdf';
+                                    a.click();
+                                    setMsg('STIG bulleted report downloaded successfully!');
+                                }
+                            }
+                        }
+                    }
+                } catch (err) {
+                    setMsg('Error: ' + err.message);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
             return html`
                 <div style="font-family:sans-serif;max-width:700px;margin:40px auto">
                     <h2>Enterprise Compliance & FIPS Auditor</h2>
@@ -106,9 +160,14 @@
                                 </label>
                             `)}
                         </div>
-                        <button type="submit" disabled=${loading} style=${() => `padding:10px;background:${loading() ? '#a0aec0' : '#2b6cb0'};color:#fff;border:none;cursor:${loading() ? 'not-allowed' : 'pointer'}`}>
-                            ${() => loading() ? 'Generating Report...' : 'Generate PDF Report'}
-                        </button>
+                        <div style="display:flex;gap:10px">
+                            <button type="submit" disabled=${loading()} style=${() => `flex:1;padding:10px;background:${loading() ? '#a0aec0' : '#2b6cb0'};color:#fff;border:none;cursor:${loading() ? 'not-allowed' : 'pointer'}`}>
+                                ${() => loading() ? 'Processing...' : 'Generate PDF Report'}
+                            </button>
+                            <button type="button" onClick=${submitStig} disabled=${loading()} style=${() => `flex:1;padding:10px;background:${loading() ? '#a0aec0' : '#2d3748'};color:#fff;border:none;cursor:${loading() ? 'not-allowed' : 'pointer'}`}>
+                                ${() => loading() ? 'Processing...' : 'Generate Bulleted STIG Report'}
+                            </button>
+                        </div>
                     </form>
                     ${() => loading() && html`
                         <div style="margin-top:15px;background:#edf2f7;border-radius:4px;overflow:hidden;height:12px">
