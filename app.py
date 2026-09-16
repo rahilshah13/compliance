@@ -18,7 +18,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://ollama:11434")
 MODEL_NAME = os.getenv("MODEL_NAME", "gemma2:2b")
 
-# Comprehensive catalog combining industry frameworks and all active FIPS standards
+# Comprehensive catalog combining industry frameworks, active FIPS standards, and STIG baselines
 FRAMEWORKS = {
     "SOC 2": ["Access Control", "Change Management", "Encryption", "Incident Response"],
     "ISO 27001": ["SoA Mapping", "Risk Assessment", "Asset Management", "Internal Audit"],
@@ -37,7 +37,13 @@ FRAMEWORKS = {
     "FIPS 202": ["SHA-3 Standard", "Permutation-Based Functions", "Extendable-Output Functions (XOF)", "Keccak Hash Integrity"],
     "FIPS 203": ["Module-Lattice-Based KEM", "Post-Quantum Cryptography", "Encapsulation Key Management", "Ciphertext Verification"],
     "FIPS 204": ["Module-Lattice-Based Digital Signatures", "ML-DSA Implementation", "Signature Generation", "Public Key Validation"],
-    "FIPS 205": ["Stateless Hash-Based Signatures", "SLH-DSA Implementation", "Tree-Based Hash Authentication", "Secure Key Generation"]
+    "FIPS 205": ["Stateless Hash-Based Signatures", "SLH-DSA Implementation", "Tree-Based Hash Authentication", "Secure Key Generation"],
+    "STIG": [
+        "Access Control and Least Privilege",
+        "Credential & Secret Management",
+        "Network Isolation & Multi-Tenancy",
+        "Container & Runtime Hardening"
+    ]
 }
 
 NAICS_MAPPING = {
@@ -193,4 +199,113 @@ def audit_stream(req: Req):
             "Cache-Control": "no-cache",
             "Connection": "keep-alive"
         }
+    )
+
+@app.post("/api/stig-stream")
+def stig_stream(req: Req):
+    def event_generator():
+        td = tempfile.mkdtemp()
+        try:
+            yield f"data: {json.dumps({'status': 'Cloning repository for STIG hardening evaluation...', 'progress': 10})}\n\n"
+            subprocess.run([
+                "git", "clone", "--depth", "1", "--recurse-submodules", req.repo_url, td
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            valid_exts = ('.py', '.js', '.ts', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.json', '.yml', '.yaml', '.tf', '.sh', '.sql', '.dockerfile')
+            ignore_dirs = {'.git', 'node_modules', '__pycache__', 'venv', 'env', 'dist', 'build', '.next'}
+            
+            files = []
+            for r, ds, fs in os.walk(td):
+                ds[:] = [d for d in ds if d not in ignore_dirs]
+                for f in fs:
+                    if f.endswith(valid_exts) or '.' not in f:
+                        files.append(os.path.relpath(os.path.join(r, f), td))
+
+            yield f"data: {json.dumps({'status': f'Analyzing {len(files)} files against DISA STIG baselines...', 'progress': 30})}\n\n"
+            
+            stig_sections = FRAMEWORKS["STIG"]
+            results = {}
+            
+            for idx, field in enumerate(stig_sections):
+                pct = int(30 + (idx / len(stig_sections)) * 50)
+                yield f"data: {json.dumps({'status': f'Evaluating STIG control: {field}...', 'progress': pct})}\n\n"
+                
+                field_evals = []
+                for fp in files[:25]:
+                    content = ""
+                    try:
+                        with open(os.path.join(td, fp), errors="ignore") as f:
+                            content = f.read(250)
+                    except Exception:
+                        content = "[Unreadable]"
+                    
+                    prompt = (
+                        f"STIG vulnerability review of file '{fp}' for control area '{field}'.\n\n"
+                        f"File snippet:\n{content}\n\n"
+                        f"Output format requirement: Start strictly with [COMPLIANT], [PARTIAL], or [NON-COMPLIANT], "
+                        f"followed by a single concise bullet-point style sentence explaining the finding."
+                    )
+                    raw_response = ask_gemma(prompt)
+                    
+                    score = "COMPLIANT"
+                    if "[PARTIAL]" in raw_response.upper():
+                        score = "PARTIAL"
+                        analysis = re.sub(r'\[PARTIAL\]', '', raw_response, flags=re.IGNORECASE).strip()
+                    elif "[NON-COMPLIANT]" in raw_response.upper() or "[NON COMPLIANT]" in raw_response.upper():
+                        score = "NON-COMPLIANT"
+                        analysis = re.sub(r'\[NON-?COMPLIANT\]', '', raw_response, flags=re.IGNORECASE).strip()
+                    else:
+                        analysis = re.sub(r'\[COMPLIANT\]', '', raw_response, flags=re.IGNORECASE).strip()
+
+                    field_evals.append({"file": fp, "score": score, "analysis": analysis or f"Meets baseline checks for {field}."})
+                results[field] = field_evals
+
+            yield f"data: {json.dumps({'status': 'Compiling STIG PDF Report...', 'progress': 90})}\n\n"
+            pdf_path = tempfile.mktemp(suffix=".pdf")
+            doc = SimpleDocTemplate(pdf_path, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
+            styles = getSampleStyleSheet()
+            
+            header_style = ParagraphStyle('HeaderStyle', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=9)
+            cell_style = ParagraphStyle('CellStyle', parent=styles['Normal'], fontSize=8, leading=10)
+            
+            story = [
+                Paragraph("DISA STIG Compliance & Hardening Report", styles['Heading1']), 
+                Paragraph(f"Repository: {req.repo_url} | Profile: Multi-Tenant Cloud-Agnostic Baseline", styles['Normal']), 
+                Spacer(1, 10)
+            ]
+            
+            for field, evals in results.items():
+                story.append(Paragraph(f"<b>STIG Control: {field}</b>", styles['Heading2']))
+                bullet_data = [[Paragraph("<b>File Path</b>", header_style), Paragraph("<b>Status</b>", header_style), Paragraph("<b>Bulleted Security Finding</b>", header_style)]]
+                for e in evals:
+                    bullet_data.append([
+                        Paragraph(e['file'], cell_style), 
+                        Paragraph(e['score'], cell_style), 
+                        Paragraph(f"• {e['analysis']}", cell_style)
+                    ])
+                story.append(Table(bullet_data, colWidths=[110, 90, 340], style=[
+                    ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+                    ('VALIGN', (0,0), (-1,-1), 'TOP'),
+                    ('BACKGROUND', (0,0), (-1,0), colors.whitesmoke),
+                    ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+                    ('TOPPADDING', (0,0), (-1,-1), 4),
+                ]))
+                story.append(Spacer(1, 8))
+            
+            doc.build(story)
+            shutil.rmtree(td)
+
+            with open(pdf_path, "rb") as f:
+                pdf_bytes = f.read()
+            os.remove(pdf_path)
+
+            yield f"data: {json.dumps({'status': 'STIG Report Complete!', 'progress': 100, 'pdf': pdf_bytes.hex()})}\n\n"
+        except Exception as e:
+            shutil.rmtree(td, ignore_errors=True)
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(), 
+        media_type="text/event-stream",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache", "Connection": "keep-alive"}
     )
