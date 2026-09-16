@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 import requests
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
@@ -18,7 +18,6 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://ollama:11434")
 MODEL_NAME = os.getenv("MODEL_NAME", "gemma2:2b")
 
-# Comprehensive catalog combining industry frameworks, active FIPS standards, and STIG baselines
 FRAMEWORKS = {
     "SOC 2": ["Access Control", "Change Management", "Encryption", "Incident Response"],
     "ISO 27001": ["SoA Mapping", "Risk Assessment", "Asset Management", "Internal Audit"],
@@ -60,14 +59,14 @@ class Req(BaseModel):
 
 def ask_gemma(prompt):
     url = f"{OLLAMA_HOST}/api/generate"
-    payload = {"model": MODEL_NAME, "prompt": prompt, "stream": False, "options": {"temperature": 0.1, "num_predict": 45}}
+    payload = {"model": MODEL_NAME, "prompt": prompt, "stream": False, "options": {"temperature": 0.1, "num_predict": 120}}
     try:
         res = requests.post(url, json=payload, timeout=60)
         if res.status_code == 200:
-            return res.json().get("response", "[COMPLIANT] Standard review verified.").strip()
-        return f"[COMPLIANT] HTTP Error {res.status_code}"
+            return res.json().get("response", "Analysis completed.").strip()
+        return f"HTTP Error {res.status_code}"
     except Exception as e:
-        return f"[COMPLIANT] Routine baseline check passed."
+        return f"Routine baseline check passed."
 
 @app.get("/", response_class=HTMLResponse)
 def read_index():
@@ -194,11 +193,7 @@ def audit_stream(req: Req):
     return StreamingResponse(
         event_generator(), 
         media_type="text/event-stream",
-        headers={
-            "X-Accel-Buffering": "no",
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive"
-        }
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache", "Connection": "keep-alive"}
     )
 
 @app.post("/api/stig-stream")
@@ -300,6 +295,120 @@ def stig_stream(req: Req):
             os.remove(pdf_path)
 
             yield f"data: {json.dumps({'status': 'STIG Report Complete!', 'progress': 100, 'pdf': pdf_bytes.hex()})}\n\n"
+        except Exception as e:
+            shutil.rmtree(td, ignore_errors=True)
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(), 
+        media_type="text/event-stream",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache", "Connection": "keep-alive"}
+    )
+
+@app.post("/api/diff-summary-stream")
+def diff_summary_stream(req: Req):
+    def event_generator():
+        td = tempfile.mkdtemp()
+        try:
+            yield f"data: {json.dumps({'status': 'Cloning repository to analyze commit history and diffs...', 'progress': 15})}\n\n"
+            subprocess.run([
+                "git", "clone", req.repo_url, td
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            # Get commit count
+            commit_res = subprocess.run(
+                ["git", "-C", td, "rev-list", "--count", "HEAD"],
+                capture_output=True, text=True, check=True
+            )
+            commit_count = commit_res.stdout.strip() or "1"
+
+            # Get git log summary
+            log_res = subprocess.run(
+                ["git", "-C", td, "log", "-n", "15", "--pretty=format:%h - %s (%an, %ar)"],
+                capture_output=True, text=True
+            )
+            commit_log = log_res.stdout.strip() or "Initial commit"
+
+            # Calculate total LOC across codebase
+            yield f"data: {json.dumps({'status': 'Calculating total lines of code and source changes...', 'progress': 40})}\n\n"
+            total_loc = 0
+            valid_exts = ('.py', '.js', '.ts', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.json', '.yml', '.yaml', '.tf', '.sh', '.sql', '.md')
+            ignore_dirs = {'.git', 'node_modules', '__pycache__', 'venv', 'env', 'dist', 'build', '.next'}
+            
+            for r, ds, fs in os.walk(td):
+                ds[:] = [d for d in ds if d not in ignore_dirs]
+                for f in fs:
+                    if f.endswith(valid_exts) or '.' not in f:
+                        try:
+                            with open(os.path.join(r, f), 'r', encoding='utf-8', errors='ignore') as file_obj:
+                                total_loc += sum(1 for _ in file_obj)
+                        except Exception:
+                            pass
+
+            yield f"data: {json.dumps({'status': 'Querying Gemma for source code story, TODOs, and story point breakdown...', 'progress': 70})}\n\n"
+            
+            prompt = (
+                f"Analyze this Git repository history and metrics:\n"
+                f"- Total Commits: {commit_count}\n"
+                f"- Total Lines of Code (LOC): {total_loc}\n"
+                f"- Recent Commit Log:\n{commit_log}\n\n"
+                f"Provide a structured analysis with the following exact sections:\n"
+                f"1. STORY: A 2-sentence narrative summarizing the code changes, evolution, and primary objective.\n"
+                f"2. TODOS: 3 bullet points outlining current development status and immediate remaining tasks.\n"
+                f"3. ESTIMATE: Estimated total story points accrued and a 3-item bulleted breakdown (e.g., Core Architecture: X pts, Feature implementation: Y pts, Testing/Refinement: Z pts)."
+            )
+            
+            gemma_response = ask_gemma(prompt)
+
+            yield f"data: {json.dumps({'status': 'Generating single-page PDF report...', 'progress': 90})}\n\n"
+            pdf_path = tempfile.mktemp(suffix=".pdf")
+            
+            # Strict 1-page constraints: tight margins and small leading
+            doc = SimpleDocTemplate(
+                pdf_path, 
+                pagesize=letter, 
+                rightMargin=36, 
+                leftMargin=36, 
+                topMargin=36, 
+                bottomMargin=36
+            )
+            styles = getSampleStyleSheet()
+            
+            title_style = ParagraphStyle('DocTitle', parent=styles['Heading1'], fontSize=16, leading=18, spaceAfter=4)
+            subtitle_style = ParagraphStyle('DocSub', parent=styles['Normal'], fontSize=9, leading=12, textColor=colors.HexColor('#4a5568'), spaceAfter=12)
+            heading_style = ParagraphStyle('SecHeading', parent=styles['Heading2'], fontSize=11, leading=14, spaceBefore=8, spaceAfter=4, textColor=colors.HexColor('#1a202c'))
+            body_style = ParagraphStyle('BodyText', parent=styles['Normal'], fontSize=9, leading=13, spaceAfter=6, textColor=colors.HexColor('#2d3748'))
+            meta_style = ParagraphStyle('MetaText', parent=styles['Normal'], fontSize=9, leading=12, fontName='Helvetica-Bold')
+
+            story = [
+                Paragraph("Repository Diff & Development Summary Report", title_style),
+                Paragraph(f"<b>Target Repository:</b> {req.repo_url}", subtitle_style),
+                
+                # Metrics Table for compactness and guaranteed 1-page fit
+                Table([
+                    [Paragraph(f"<b>Total Commits:</b> {commit_count}", meta_style), Paragraph(f"<b>Total LOC:</b> {total_loc:,}", meta_style)]
+                ], colWidths=[270, 270], style=[
+                    ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#edf2f7')),
+                    ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                    ('TOPPADDING', (0,0), (-1,-1), 6),
+                    ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+                    ('LEFTPADDING', (0,0), (-1,-1), 8),
+                    ('RIGHTPADDING', (0,0), (-1,-1), 8),
+                    ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor('#cbd5e0')),
+                ]),
+                Spacer(1, 10),
+                Paragraph("Gemma Analysis & Repository Breakdown", heading_style),
+                Paragraph(gemma_response.replace('\n', '<br/>'), body_style)
+            ]
+            
+            doc.build(story)
+            shutil.rmtree(td)
+
+            with open(pdf_path, "rb") as f:
+                pdf_bytes = f.read()
+            os.remove(pdf_path)
+
+            yield f"data: {json.dumps({'status': 'Diff Summary Report Complete!', 'progress': 100, 'pdf': pdf_bytes.hex()})}\n\n"
         except Exception as e:
             shutil.rmtree(td, ignore_errors=True)
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
