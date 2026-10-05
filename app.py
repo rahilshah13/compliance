@@ -136,12 +136,12 @@ def audit_stream(req: Req):
                         
                         if "[PARTIAL]" in raw_response.upper():
                             score = "PARTIAL"
-                            analysis = re.sub(r'\[PARTIAL\]', '', raw_response, flags=re.IGNORECASE).strip()
+                            analysis = re.sub(r'[PARTIAL]', '', raw_response, flags=re.IGNORECASE).strip()
                         elif "[NON-COMPLIANT]" in raw_response.upper() or "[NON COMPLIANT]" in raw_response.upper():
                             score = "NON-COMPLIANT"
-                            analysis = re.sub(r'\[NON-?COMPLIANT\]', '', raw_response, flags=re.IGNORECASE).strip()
+                            analysis = re.sub(r'[NON-?COMPLIANT]', '', raw_response, flags=re.IGNORECASE).strip()
                         else:
-                            analysis = re.sub(r'\[COMPLIANT\]', '', raw_response, flags=re.IGNORECASE).strip()
+                            analysis = re.sub(r'[COMPLIANT]', '', raw_response, flags=re.IGNORECASE).strip()
 
                         if not analysis or len(analysis) < 5:
                             analysis = f"Maintains standard controls for {field.lower()}."
@@ -186,6 +186,100 @@ def audit_stream(req: Req):
             os.remove(pdf_path)
 
             yield f"data: {json.dumps({'status': 'Complete!', 'progress': 100, 'pdf': pdf_bytes.hex()})}\n\n"
+        except Exception as e:
+            shutil.rmtree(td, ignore_errors=True)
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(), 
+        media_type="text/event-stream",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache", "Connection": "keep-alive"}
+    )
+
+@app.post("/api/spdx-stream")
+def spdx_stream(req: Req):
+    def event_generator():
+        td = tempfile.mkdtemp()
+        try:
+            yield f"data: {json.dumps({'status': 'Cloning repository for SPDX 3.0 SBOM generation...', 'progress': 15})}\n\n"
+            subprocess.run([
+                "git", "clone", "--depth", "1", "--recurse-submodules", req.repo_url, td
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            valid_exts = ('.py', '.js', '.ts', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.json', '.yml', '.yaml', '.tf', '.sh', '.sql', '.dockerfile', '.md')
+            ignore_dirs = {'.git', 'node_modules', '__pycache__', 'venv', 'env', 'dist', 'build', '.next'}
+            
+            files = []
+            for r, ds, fs in os.walk(td):
+                ds[:] = [d for d in ds if d not in ignore_dirs]
+                for f in fs:
+                    if f.endswith(valid_exts) or '.' not in f:
+                        files.append(os.path.relpath(os.path.join(r, f), td))
+
+            yield f"data: {json.dumps({'status': f'Building SPDX 3.0 document graph for {len(files)} components...', 'progress': 50})}\n\n"
+            
+            spdx_elements = []
+            for fp in files:
+                file_size = 0
+                try:
+                    file_size = os.path.getsize(os.path.join(td, fp))
+                except Exception:
+                    pass
+                spdx_elements.append({
+                    "type": "File",
+                    "name": fp,
+                    "SPDXID": f"SPDXRef-File-{re.sub(r'[^a-zA-Z0-9.-]', '-', fp)}",
+                    "sizeBytes": file_size,
+                    "relationship": "DESCRIBES"
+                })
+
+            spdx_doc = {
+                "spdxVersion": "SPDX-3.0",
+                "dataLicense": "CC0-1.0",
+                "SPDXID": "SPDXRef-DOCUMENT",
+                "name": f"SBOM-{os.path.basename(req.repo_url)}",
+                "documentNamespace": f"https://spdx.dev/spdx-3.0/document/{abs(hash(req.repo_url))}",
+                "element": spdx_elements
+            }
+
+            yield f"data: {json.dumps({'status': 'Compiling SPDX 3.0 JSON report...', 'progress': 85})}\n\n"
+            pdf_path = tempfile.mktemp(suffix=".pdf")
+            
+            doc = SimpleDocTemplate(
+                pdf_path, 
+                pagesize=letter, 
+                rightMargin=36, 
+                leftMargin=36, 
+                topMargin=36, 
+                bottomMargin=36
+            )
+            styles = getSampleStyleSheet()
+            
+            title_style = ParagraphStyle('DocTitle', parent=styles['Heading1'], fontSize=15, leading=18, spaceAfter=4)
+            subtitle_style = ParagraphStyle('DocSub', parent=styles['Normal'], fontSize=9, leading=12, textColor=colors.HexColor('#4a5568'), spaceAfter=10)
+            heading_style = ParagraphStyle('SecHeading', parent=styles['Heading2'], fontSize=11, leading=14, spaceBefore=6, spaceAfter=4, textColor=colors.HexColor('#1a202c'))
+            code_style = ParagraphStyle('CodeText', parent=styles['Normal'], fontName='Courier', fontSize=7.5, leading=9.5, textColor=colors.HexColor('#1a202c'))
+
+            json_snippet = json.dumps(spdx_doc, indent=2)
+            # Truncate if extremely long for PDF page bounds, or keep structured representation
+            formatted_json = json_snippet.replace('\n', '<br/>').replace(' ', '&nbsp;')
+
+            story = [
+                Paragraph("Software Bill of Materials (SPDX 3.0 Report)", title_style),
+                Paragraph(f"<b>Repository:</b> {req.repo_url} | <b>Total Elements:</b> {len(files)}", subtitle_style),
+                Spacer(1, 4),
+                Paragraph("SPDX 3.0 Core Document Graph", heading_style),
+                Paragraph(formatted_json, code_style)
+            ]
+            
+            doc.build(story)
+            shutil.rmtree(td)
+
+            with open(pdf_path, "rb") as f:
+                pdf_bytes = f.read()
+            os.remove(pdf_path)
+
+            yield f"data: {json.dumps({'status': 'SPDX 3.0 Report Complete!', 'progress': 100, 'pdf': pdf_bytes.hex()})}\n\n"
         except Exception as e:
             shutil.rmtree(td, ignore_errors=True)
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
@@ -245,12 +339,12 @@ def stig_stream(req: Req):
                     score = "COMPLIANT"
                     if "[PARTIAL]" in raw_response.upper():
                         score = "PARTIAL"
-                        analysis = re.sub(r'\[PARTIAL\]', '', raw_response, flags=re.IGNORECASE).strip()
+                        analysis = re.sub(r'[PARTIAL]', '', raw_response, flags=re.IGNORECASE).strip()
                     elif "[NON-COMPLIANT]" in raw_response.upper() or "[NON COMPLIANT]" in raw_response.upper():
                         score = "NON-COMPLIANT"
-                        analysis = re.sub(r'\[NON-?COMPLIANT\]', '', raw_response, flags=re.IGNORECASE).strip()
+                        analysis = re.sub(r'[NON-?COMPLIANT]', '', raw_response, flags=re.IGNORECASE).strip()
                     else:
-                        analysis = re.sub(r'\[COMPLIANT\]', '', raw_response, flags=re.IGNORECASE).strip()
+                        analysis = re.sub(r'[COMPLIANT]', '', raw_response, flags=re.IGNORECASE).strip()
 
                     field_evals.append({"file": fp, "score": score, "analysis": analysis or f"Meets baseline checks for {field}."})
                 results[field] = field_evals
@@ -315,21 +409,18 @@ def diff_summary_stream(req: Req):
                 "git", "clone", req.repo_url, td
             ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
-            # Get commit count
             commit_res = subprocess.run(
                 ["git", "-C", td, "rev-list", "--count", "HEAD"],
                 capture_output=True, text=True, check=True
             )
             commit_count = commit_res.stdout.strip() or "1"
 
-            # Get git log summary
             log_res = subprocess.run(
                 ["git", "-C", td, "log", "-n", "15", "--pretty=format:%h - %s (%an, %ar)"],
                 capture_output=True, text=True
             )
             commit_log = log_res.stdout.strip() or "Initial commit"
 
-            # Calculate total LOC across codebase
             yield f"data: {json.dumps({'status': 'Calculating total lines of code and source changes...', 'progress': 40})}\n\n"
             total_loc = 0
             valid_exts = ('.py', '.js', '.ts', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.json', '.yml', '.yaml', '.tf', '.sh', '.sql', '.md')
@@ -363,7 +454,6 @@ def diff_summary_stream(req: Req):
             yield f"data: {json.dumps({'status': 'Generating single-page PDF report...', 'progress': 90})}\n\n"
             pdf_path = tempfile.mktemp(suffix=".pdf")
             
-            # Strict 1-page constraints: tight margins and small leading
             doc = SimpleDocTemplate(
                 pdf_path, 
                 pagesize=letter, 
@@ -378,43 +468,4 @@ def diff_summary_stream(req: Req):
             subtitle_style = ParagraphStyle('DocSub', parent=styles['Normal'], fontSize=9, leading=12, textColor=colors.HexColor('#4a5568'), spaceAfter=12)
             heading_style = ParagraphStyle('SecHeading', parent=styles['Heading2'], fontSize=11, leading=14, spaceBefore=8, spaceAfter=4, textColor=colors.HexColor('#1a202c'))
             body_style = ParagraphStyle('BodyText', parent=styles['Normal'], fontSize=9, leading=13, spaceAfter=6, textColor=colors.HexColor('#2d3748'))
-            meta_style = ParagraphStyle('MetaText', parent=styles['Normal'], fontSize=9, leading=12, fontName='Helvetica-Bold')
-
-            story = [
-                Paragraph("Repository Diff & Development Summary Report", title_style),
-                Paragraph(f"<b>Target Repository:</b> {req.repo_url}", subtitle_style),
-                
-                # Metrics Table for compactness and guaranteed 1-page fit
-                Table([
-                    [Paragraph(f"<b>Total Commits:</b> {commit_count}", meta_style), Paragraph(f"<b>Total LOC:</b> {total_loc:,}", meta_style)]
-                ], colWidths=[270, 270], style=[
-                    ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#edf2f7')),
-                    ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-                    ('TOPPADDING', (0,0), (-1,-1), 6),
-                    ('BOTTOMPADDING', (0,0), (-1,-1), 6),
-                    ('LEFTPADDING', (0,0), (-1,-1), 8),
-                    ('RIGHTPADDING', (0,0), (-1,-1), 8),
-                    ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor('#cbd5e0')),
-                ]),
-                Spacer(1, 10),
-                Paragraph("Gemma Analysis & Repository Breakdown", heading_style),
-                Paragraph(gemma_response.replace('\n', '<br/>'), body_style)
-            ]
-            
-            doc.build(story)
-            shutil.rmtree(td)
-
-            with open(pdf_path, "rb") as f:
-                pdf_bytes = f.read()
-            os.remove(pdf_path)
-
-            yield f"data: {json.dumps({'status': 'Diff Summary Report Complete!', 'progress': 100, 'pdf': pdf_bytes.hex()})}\n\n"
-        except Exception as e:
-            shutil.rmtree(td, ignore_errors=True)
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
-
-    return StreamingResponse(
-        event_generator(), 
-        media_type="text/event-stream",
-        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache", "Connection": "keep-alive"}
-    )
+            meta_style = ParagraphStyle('MetaText', parent=styles['Normal'], fontSize=9, leading=12, fontName
