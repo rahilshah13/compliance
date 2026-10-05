@@ -136,12 +136,12 @@ def audit_stream(req: Req):
                         
                         if "[PARTIAL]" in raw_response.upper():
                             score = "PARTIAL"
-                            analysis = re.sub(r'[PARTIAL]', '', raw_response, flags=re.IGNORECASE).strip()
+                            analysis = re.sub(r'\[PARTIAL\]', '', raw_response, flags=re.IGNORECASE).strip()
                         elif "[NON-COMPLIANT]" in raw_response.upper() or "[NON COMPLIANT]" in raw_response.upper():
                             score = "NON-COMPLIANT"
-                            analysis = re.sub(r'[NON-?COMPLIANT]', '', raw_response, flags=re.IGNORECASE).strip()
+                            analysis = re.sub(r'\[NON-?COMPLIANT\]', '', raw_response, flags=re.IGNORECASE).strip()
                         else:
-                            analysis = re.sub(r'[COMPLIANT]', '', raw_response, flags=re.IGNORECASE).strip()
+                            analysis = re.sub(r'\[COMPLIANT\]', '', raw_response, flags=re.IGNORECASE).strip()
 
                         if not analysis or len(analysis) < 5:
                             analysis = f"Maintains standard controls for {field.lower()}."
@@ -261,7 +261,6 @@ def spdx_stream(req: Req):
             code_style = ParagraphStyle('CodeText', parent=styles['Normal'], fontName='Courier', fontSize=7.5, leading=9.5, textColor=colors.HexColor('#1a202c'))
 
             json_snippet = json.dumps(spdx_doc, indent=2)
-            # Truncate if extremely long for PDF page bounds, or keep structured representation
             formatted_json = json_snippet.replace('\n', '<br/>').replace(' ', '&nbsp;')
 
             story = [
@@ -339,12 +338,12 @@ def stig_stream(req: Req):
                     score = "COMPLIANT"
                     if "[PARTIAL]" in raw_response.upper():
                         score = "PARTIAL"
-                        analysis = re.sub(r'[PARTIAL]', '', raw_response, flags=re.IGNORECASE).strip()
+                        analysis = re.sub(r'\[PARTIAL\]', '', raw_response, flags=re.IGNORECASE).strip()
                     elif "[NON-COMPLIANT]" in raw_response.upper() or "[NON COMPLIANT]" in raw_response.upper():
                         score = "NON-COMPLIANT"
-                        analysis = re.sub(r'[NON-?COMPLIANT]', '', raw_response, flags=re.IGNORECASE).strip()
+                        analysis = re.sub(r'\[NON-?COMPLIANT\]', '', raw_response, flags=re.IGNORECASE).strip()
                     else:
-                        analysis = re.sub(r'[COMPLIANT]', '', raw_response, flags=re.IGNORECASE).strip()
+                        analysis = re.sub(r'\[COMPLIANT\]', '', raw_response, flags=re.IGNORECASE).strip()
 
                     field_evals.append({"file": fp, "score": score, "analysis": analysis or f"Meets baseline checks for {field}."})
                 results[field] = field_evals
@@ -468,4 +467,41 @@ def diff_summary_stream(req: Req):
             subtitle_style = ParagraphStyle('DocSub', parent=styles['Normal'], fontSize=9, leading=12, textColor=colors.HexColor('#4a5568'), spaceAfter=12)
             heading_style = ParagraphStyle('SecHeading', parent=styles['Heading2'], fontSize=11, leading=14, spaceBefore=8, spaceAfter=4, textColor=colors.HexColor('#1a202c'))
             body_style = ParagraphStyle('BodyText', parent=styles['Normal'], fontSize=9, leading=13, spaceAfter=6, textColor=colors.HexColor('#2d3748'))
-            meta_style = ParagraphStyle('MetaText', parent=styles['Normal'], fontSize=9, leading=12, fontName
+            meta_style = ParagraphStyle('MetaText', parent=styles['Normal'], fontSize=9, leading=12, fontName='Helvetica-Bold')
+
+            story = [
+                Paragraph("Repository Diff & Development Summary Report", title_style),
+                Paragraph(f"<b>Target Repository:</b> {req.repo_url}", subtitle_style),
+                Table([
+                    [Paragraph(f"<b>Total Commits:</b> {commit_count}", meta_style), Paragraph(f"<b>Total LOC:</b> {total_loc:,}", meta_style)]
+                ], colWidths=[270, 270], style=[
+                    ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#edf2f7')),
+                    ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                    ('TOPPADDING', (0,0), (-1,-1), 6),
+                    ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+                    ('LEFTPADDING', (0,0), (-1,-1), 8),
+                    ('RIGHTPADDING', (0,0), (-1,-1), 8),
+                    ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor('#cbd5e0')),
+                ]),
+                Spacer(1, 10),
+                Paragraph("Gemma Analysis & Repository Breakdown", heading_style),
+                Paragraph(gemma_response.replace('\n', '<br/>'), body_style)
+            ]
+            
+            doc.build(story)
+            shutil.rmtree(td)
+
+            with open(pdf_path, "rb") as f:
+                pdf_bytes = f.read()
+            os.remove(pdf_path)
+
+            yield f"data: {json.dumps({'status': 'Diff Summary Report Complete!', 'progress': 100, 'pdf': pdf_bytes.hex()})}\n\n"
+        except Exception as e:
+            shutil.rmtree(td, ignore_errors=True)
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(), 
+        media_type="text/event-stream",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache", "Connection": "keep-alive"}
+    )
