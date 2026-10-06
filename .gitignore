@@ -4,5 +4,17 @@
 !index.html
 !docker-compose.yml
 !README.md
+
+!lib/cdk.js
+!lib/stack.js
+!cdk.json
+!package.json
+
 !example-report.pdf
 !example-report-2.pdf
+
+node_modules/
+package-lock.json
+cdk.context.json
+cdk.out/
+.DS_STORE

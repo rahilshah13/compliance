@@ -1,0 +1,13 @@
+{
+  "name": "docker-ipv6-ipam-deploy",
+  "version": "1.0.0",
+  "description": "AWS CDK JavaScript deployment with custom IPv6 IPAM pool",
+  "bin": {
+    "cdk-docker": "lib/cdk.js"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.100.0",
+    "constructs": "^10.0.0",
+    "source-map-support": "^0.5.21"
+  }
+}
